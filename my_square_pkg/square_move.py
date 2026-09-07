@@ -51,6 +51,8 @@ class SquareMoveNode(Node):
         cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
         self.yaw = math.atan2(siny_cosp, cosy_cosp)
 
+
+    # 角度の変換
     def normalize_angle(self, angle):
         while angle > math.pi:
             angle -= 2.0 * math.pi

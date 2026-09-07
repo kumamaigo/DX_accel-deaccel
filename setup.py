@@ -25,6 +25,9 @@ setup(
     entry_points={
         'console_scripts': [
         'square_move = my_square_pkg.square_move:main',
+        'accel_deaccel = my_square_pkg.accel_deaccel:main',
+        'accel_deaccel_2 = my_square_pkg.accel_deaccel_2:main',
+        'accel_deaccel_3 = my_square_pkg.accel_deaccel_3:main',
         ],
     },
 )
