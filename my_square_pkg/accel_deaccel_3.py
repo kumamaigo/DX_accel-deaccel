@@ -26,20 +26,23 @@ class KobukiAccelDecelTestNode(Node):
         )
 
         # 物理パラメータ
-        self.g = 9.81
-        self.mu = 0.6
-        self.h = 0.15
-        self.Lf = 0.12
-        self.Lr = 0.12
-        self.L = self.Lf + self.Lr
-        self.alpha = 1.0
+        self.g = 9.81   # 重力加速度 [m/s^2]
+        self.mu = 0.6   # 路面の摩擦係数
+        self.h = 0.19   # 重心の高さ [m]
+        self.Lf = 0.15  # 前軸から重心までの距離 [m]
+        self.Lr = 0.70  # 後軸から重心までの距離 [m]
+        self.L = self.Lf + self.Lr  # ホイールベース（前後の軸間距離） [m]
+        self.alpha = 1.0    # 減速時の安全・調整係数
         
-        self.max_v_kmh = 2.5
-        self.v_max = self.max_v_kmh / 3.6  # [m/s]
+        self.max_v_kmh = 2.5    # 最高速度の設定 (時速6km = 約1.67m/s)
+        self.v_max = self.max_v_kmh / 3.6  # [m/s]に変換
 
         # 手動で扱いやすい加減速度に設定（必要に応じて調整）
-        self.a_acc = 0.3  # 加速度 [m/s^2]
-        self.a_dec = 0.3  # 減速度 [m/s^2]
+        # self.a_acc = 0.3  # 加速度 [m/s^2]
+        # self.a_dec = 0.3  # 減速度 [m/s^2]
+
+        self.a_acc = self.calc_accel_limit()  # 加速限界
+        self.a_dec = self.calc_decel_limit()  # 減速限界
 
         self.current_v_odom = 0.0
         self.target_v = 0.0
