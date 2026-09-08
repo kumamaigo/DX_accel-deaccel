@@ -1,17 +1,16 @@
+# AIと一緒に作ったやつ(あまりうまくいかなかった月曜日仕様)
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 import matplotlib.pyplot as plt  # グラフ描画用
-import csv                      # CSV出力用
-import os
 
 class KobukiAccelDecelTestNode(Node):
     def __init__(self):
         super().__init__('kobuki_accel_decel_test_node')
 
-        self.cmd_pub = self.create_publisher(Twist,"/aiformula_control/twist_mux/cmd_vel", 10)
+        self.cmd_pub = self.create_publisher(Twist, '/commands/velocity', 10)
 
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -20,28 +19,26 @@ class KobukiAccelDecelTestNode(Node):
         )
         self.odom_sub = self.create_subscription(
             Odometry,
-            '/aiformula_sensing/gyro_odometry_publisher/odom',
+            '/odom',
             self.odom_callback,
             qos_profile
         )
 
         # 物理パラメータ
-        self.g = 9.81   # 重力加速度 [m/s^2]
-        self.mu = 0.6   # 路面の摩擦係数
-        self.h = 0.19   # 重心の高さ [m]
-        self.Lf = 0.15  # 前軸から重心までの距離 [m]
-        self.Lr = 0.70  # 後軸から重心までの距離 [m]
-        self.L = self.Lf + self.Lr  # ホイールベース（前後の軸間距離） [m]
-        self.alpha = 1.0    # 減速時の安全・調整係数
+        self.g = 9.81
+        self.mu = 0.25
+        self.h = 0.15
+        self.Lf = 0.12
+        self.Lr = 0.12
+        self.L = self.Lf + self.Lr
+        self.alpha = 1.0
         
-        self.max_v_kmh = 5    # 最高速度の設定 (時速2.5km)
-        self.v_max = self.max_v_kmh / 3.6  # [m/s]に変換
+        self.max_v_kmh = 2.5
+        self.v_max = self.max_v_kmh / 3.6  # [m/s]
 
-        # 加速限界・減速限界の計算メソッドを呼び出して設定
-        self.a_acc = self.calc_accel_limit()  # 加速限界
-        self.a_dec = self.calc_decel_limit()  # 減速限界
-
-        self.get_logger().info(f"計算された加速限界: {self.a_acc:.3f} m/s^2, 減速限界: {self.a_dec:.3f} m/s^2")
+        # 手動で扱いやすい加減速度に設定（必要に応じて調整）
+        self.a_acc = 0.3  # 加速度 [m/s^2]
+        self.a_dec = 0.3  # 減速度 [m/s^2]
 
         self.current_v_odom = 0.0
         self.target_v = 0.0
@@ -52,31 +49,13 @@ class KobukiAccelDecelTestNode(Node):
         self.timer = self.create_timer(self.dt, self.control_loop)
 
         # ----------------------------------------------------
-        # グラフ＆CSV保存用のデータリスト＆時間管理
+        # グラフ保存用のデータリスト＆時間管理
         # ----------------------------------------------------
         self.start_time = None
         self.time_log = []
-        self.state_log = []
         self.target_v_log = []
         self.measured_v_log = []
-        self.data_saved = False
-
-        self.csv_filename = 'accel_deaccel_result.csv'
-        self.png_filename = 'accel_deaccel_result.png'
-
-    def calc_accel_limit(self):
-        """ 物理パラメータに基づいて加速限界 [m/s^2] を計算 """
-        # 加速時の前輪荷重抜け・スリップ限界を考慮した計算式例
-        # a_acc = (mu * g * Lr) / (L + mu * h)
-        a_acc = (self.mu * self.g * self.Lr) / (self.L + self.mu * self.h)
-        return float(a_acc)
-
-    def calc_decel_limit(self):
-        """ 物理パラメータに基づいて減速限界 [m/s^2] を計算 """
-        # 減速時の後輪荷重抜け・めくれ（前転）／スリップ限界を考慮した計算式例
-        # a_dec = ((mu * g * Lf) / (L - mu * h)) * alpha
-        a_dec = ((self.mu * self.g * self.Lf) / (self.L - self.mu * self.h)) * self.alpha
-        return float(a_dec)
+        self.graph_saved = False
 
     def odom_callback(self, msg):
         self.current_v_odom = msg.twist.twist.linear.x
@@ -110,13 +89,12 @@ class KobukiAccelDecelTestNode(Node):
 
         elif self.state == 'DONE':
             self.target_v = 0.0
-            if not self.data_saved:
-                self.save_data_and_plot()
-                self.data_saved = True
+            if not self.graph_saved:
+                self.save_and_plot_graph()
+                self.graph_saved = True
 
         # データログへの追加
         self.time_log.append(elapsed_total)
-        self.state_log.append(self.state)
         self.target_v_log.append(self.target_v)
         self.measured_v_log.append(self.current_v_odom)
 
@@ -131,26 +109,7 @@ class KobukiAccelDecelTestNode(Node):
         twist.angular.z = 0.0
         self.cmd_pub.publish(twist)
 
-    def save_data_and_plot(self):
-        """ CSV出力およびグラフプロットの実行 """
-        self.export_to_csv()
-        self.plot_graph()
-
-    def export_to_csv(self):
-        """ 実験データをCSV形式で出力 """
-        try:
-            with open(self.csv_filename, mode='w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                # ヘッダー書き込み
-                writer.writerow(['time_sec', 'state', 'target_velocity_mps', 'measured_velocity_mps'])
-                # データ行の書き込み
-                for t, st, v_tgt, v_meas in zip(self.time_log, self.state_log, self.target_v_log, self.measured_v_log):
-                    writer.writerow([f"{t:.3f}", st, f"{v_tgt:.4f}", f"{v_meas:.4f}"])
-            self.get_logger().info(f"【CSV保存完了】データファイルを {self.csv_filename} に保存しました。")
-        except Exception as e:
-            self.get_logger().error(f"CSV保存中にエラーが発生しました: {e}")
-
-    def plot_graph(self):
+    def save_and_plot_graph(self):
         """ 実験データのプロットと保存 """
         plt.figure(figsize=(9, 5))
         plt.plot(self.time_log, self.target_v_log, label='Target Velocity (m/s)', linestyle='--', color='blue')
@@ -163,8 +122,9 @@ class KobukiAccelDecelTestNode(Node):
         plt.legend()
         
         # 画像ファイルとして保存
-        plt.savefig(self.png_filename)
-        self.get_logger().info(f"【グラフ保存完了】{self.png_filename} に画像を保存しました。")
+        filename = 'accel_deaccel_result.png'
+        plt.savefig(filename)
+        self.get_logger().info(f"【グラフ保存完了】{filename} に画像を保存しました。")
         plt.show()
 
     def emergency_stop(self):
@@ -182,9 +142,8 @@ def main(args=None):
         pass
     finally:
         node.emergency_stop()
-        if not node.data_saved and len(node.time_log) > 0:
-            node.save_data_and_plot()
-            node.data_saved = True
+        if not node.graph_saved and len(node.time_log) > 0:
+            node.save_and_plot_graph()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
