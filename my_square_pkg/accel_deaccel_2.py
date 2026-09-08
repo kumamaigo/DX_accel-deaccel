@@ -10,7 +10,7 @@ class KobukiAccelDecelTestNode(Node):
     def __init__(self):
         super().__init__('kobuki_accel_decel_test_node')
 
-        self.cmd_pub = self.create_publisher(Twist, '/commands/velocity', 10)
+        self.cmd_pub = self.create_publisher(Twist, '/aiformula_control/twist_mux/cmd_vel', 10)
 
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -19,10 +19,16 @@ class KobukiAccelDecelTestNode(Node):
         )
         self.odom_sub = self.create_subscription(
             Odometry,
-            '/odom',
+            '/aiformula_sensing/gyro_odometry_publisher/odom',
             self.odom_callback,
             qos_profile
         )
+       # self.odom_sub = self.create_subscription(
+        #   Odometry,
+        #    '/mouse_odom',
+        #    self.odom_callback,
+        #    qos_profile
+        #)
 
         # 物理パラメータ
         self.g = 9.81
@@ -33,7 +39,7 @@ class KobukiAccelDecelTestNode(Node):
         self.L = self.Lf + self.Lr
         self.alpha = 1.0
         
-        self.max_v_kmh = 2.5
+        self.max_v_kmh = 5.6
         self.v_max = self.max_v_kmh / 3.6  # [m/s]
 
         # 手動で扱いやすい加減速度に設定（必要に応じて調整）
