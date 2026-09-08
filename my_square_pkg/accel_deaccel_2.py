@@ -1,3 +1,4 @@
+# AIと一緒に作ったやつ(あまりうまくいかなかった月曜日仕様)
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
@@ -25,7 +26,7 @@ class KobukiAccelDecelTestNode(Node):
 
         # 物理パラメータ
         self.g = 9.81
-        self.mu = 0.6
+        self.mu = 0.25
         self.h = 0.15
         self.Lf = 0.12
         self.Lr = 0.12
