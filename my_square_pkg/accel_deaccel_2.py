@@ -163,34 +163,89 @@ class KobukiAccelDecelTestNode(Node):
     self.cmd_pub.publish(twist)
 
 # -----------実験結果の保存------------
-  def save_and_plot_graph(self):
-    plt.figure(figsize=(9, 5))
-    plt.plot(
-        self.time_log,
-        self.target_v_log,
-        label="Target Velocity (m/s)",
-        linestyle="--",
-        color="blue",
-    )
-    plt.plot(
-        self.time_log,
-        self.measured_v_log,
-        label="Measured Velocity (Odom)",
-        color="red",
-    )
+def save_and_plot_graph(self):
+  # --- 1. CSVファイルの書き出し（ヘッダー前にパラメータ情報を挿入） ---
+  csv_filename = 'accel_deaccel_result.csv'
+  try:
+    with open(csv_filename, mode='w', newline='', encoding='utf-8') as f:
+      writer = csv.writer(f)
+      # メタデータとして実験条件を先頭に書き込む
+      writer.writerow(['# --- Experiment Parameters ---'])
+      writer.writerow(['# Friction coefficient (mu)', self.mu])
+      writer.writerow(['# Accel Safety Factor (alpha)', self.alpha])
+      writer.writerow(['# Decel Safety Factor (beta)', self.beta])
+      writer.writerow(['# Applied Accel Limit (a_acc [m/s^2])', f'{self.a_acc:.3f}'])
+      writer.writerow(['# Applied Decel Limit (a_dec [m/s^2])', f'{self.a_dec:.3f}'])
+      writer.writerow([])  # 区切り用の空行
 
-    plt.title("Kobuki Kinematic Accel/Decel Response (With Safety Factors)")
-    plt.xlabel("Time [s]")
-    plt.ylabel("Velocity [m/s]")
-    plt.grid(True)
-    plt.legend()
-
-    filename = "accel_deaccel_result.png"
-    plt.savefig(filename)
+      # データ列のヘッダーとログデータ
+      writer.writerow([
+          'Time[s]',
+          'Target_Velocity[m/s]',
+          'Measured_Velocity[m/s]',
+      ])
+      for t, v_target, v_meas in zip(
+          self.time_log, self.target_v_log, self.measured_v_log
+      ):
+        writer.writerow([f'{t:.3f}', f'{v_target:.3f}', f'{v_meas:.3f}'])
     self.get_logger().info(
-        f"【グラフ保存完了】{filename} に画像を保存しました。"
+        f'【CSV保存完了】{csv_filename} にデータを保存しました。'
     )
-    plt.show()
+  except Exception as e:
+    self.get_logger().error(f'CSV保存失敗: {e}')
+
+  # --- 2. グラフ画像の描画・保存 ---
+  plt.figure(figsize=(9, 5))
+  plt.plot(
+      self.time_log,
+      self.target_v_log,
+      label='Target Velocity (m/s)',
+      linestyle='--',
+      color='blue',
+  )
+  plt.plot(
+      self.time_log,
+      self.measured_v_log,
+      label='Measured Velocity (Odom)',
+      color='red',
+  )
+
+  # グラフ右下に表示する条件パラメータのテキスト作成
+  param_text = (
+      f'[ Parameters ]\n'
+      f'mu: {self.mu}\n'
+      f'alpha (Accel): {self.alpha}\n'
+      f'beta (Decel): {self.beta}\n'
+      f'a_acc: {self.a_acc:.2f} m/s²\n'
+      f'a_dec: {self.a_dec:.2f} m/s²'
+  )
+
+  # グラフ内にテキストボックスを配置（右下端）
+  plt.gca().text(
+      0.97,
+      0.05,
+      param_text,
+      transform=plt.gca().transAxes,
+      fontsize=9,
+      verticalalignment='bottom',
+      horizontalalignment='right',
+      bbox=dict(
+          boxstyle='round,pad=0.5', facecolor='white', alpha=0.8, edgecolor='gray'
+      ),
+  )
+
+  plt.title('Kobuki Kinematic Accel/Decel Response')
+  plt.xlabel('Time [s]')
+  plt.ylabel('Velocity [m/s]')
+  plt.grid(True)
+  plt.legend(loc='upper left')  # パラメータ表示と重ならないよう凡例を左上に移動
+
+  filename = 'accel_deaccel_result.png'
+  plt.savefig(filename)
+  self.get_logger().info(
+      f'【グラフ保存完了】{filename} に画像を保存しました。'
+  )
+  plt.show()
 
 
   def emergency_stop(self):
