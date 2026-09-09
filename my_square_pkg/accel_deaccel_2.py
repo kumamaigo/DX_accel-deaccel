@@ -1,12 +1,11 @@
-import math
 import csv
-import matplotlib.pyplot as plt
+import math
 from geometry_msgs.msg import Twist
+import matplotlib.pyplot as plt
 from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-
 
 
 class KobukiAccelDecelTestNode(Node):
@@ -40,39 +39,38 @@ class KobukiAccelDecelTestNode(Node):
     self.Lr = 0.7  # 後軸から重心までの距離 [m]
     self.L = self.Lf + self.Lr  # ホイールベース [m]
 
-    # --- 【追加】加減速で独立した安全係数 ---
+    # --- 加減速で独立した安全係数 ---
     self.alpha = 1.0  # 加速用の安全係数 (1.0 = 理論値100%)
-    self.beta = 0.4  # 減速用の安全係数 (追従遅れを防ぐため 0.4 など小さめに設定)    
+    self.beta = 0.4  # 減速用の安全係数 (追従遅れを防ぐため 0.4 など小さめに設定)
 
     # 最高速度の設定 (時速3.6km = 約1.0m/s)
     self.max_v_kmh = 3.6
     self.v_max = self.max_v_kmh / 3.6  # [m/s] 単位に換算
 
     # 通常速度の時間
-    self.normal_vel_time = 3.0  #[s]
+    self.normal_vel_time = 3.0  # [s]
 
     # 4. 理論限界計算 ＋ 独立した安全係数の適用
     raw_a_acc = self.calc_accel_limit()
     raw_a_dec = self.calc_decel_limit()
 
-
-    # 安全係数を加速には alpha、減速には beta を適用（raw_a_acc,dccの詳細は下記に）
+    # 安全係数を加速には alpha、減速には beta を適用
     self.a_acc = raw_a_acc * self.alpha
     self.a_dec = raw_a_dec * self.beta
 
-    # ターミナルのログ表示(デバック用)
+    # ターミナルのログ表示(デバッグ用)
     self.get_logger().info(
-        f"【理論限界】加速: {raw_a_acc:.2f} m/s^2 | 減速: {raw_a_dec:.2f} m/s^2"
+        f'【理論限界】加速: {raw_a_acc:.2f} m/s^2 | 減速: {raw_a_dec:.2f} m/s^2'
     )
     self.get_logger().info(
-        f"【安全適用】加速(α={self.alpha}): {self.a_acc:.2f} m/s^2 |"
-        f" 減速(β={self.beta}): {self.a_dec:.2f} m/s^2"
+        f'【安全適用】加速(α={self.alpha}): {self.a_acc:.2f} m/s^2 |'
+        f' 減速(β={self.beta}): {self.a_dec:.2f} m/s^2'
     )
 
     # 5. 制御ループ用の変数
     self.current_v_odom = 0.0
     self.target_v = 0.0
-    self.state = "ACCEL"
+    self.state = 'ACCEL'
     self.cruise_start_time = None
 
     self.dt = 0.1
@@ -85,29 +83,30 @@ class KobukiAccelDecelTestNode(Node):
     self.measured_v_log = []
     self.graph_saved = False
 
-# --------------------------------------------------------------------
-#  加速理論値計算
+  # --------------------------------------------------------------------
+  #  加速理論値計算
   def calc_accel_limit(self):
     term1 = (self.mu * self.g * self.Lr) / (self.L + self.mu * self.h)
     term2 = self.g * (self.Lr / self.h)
     term3 = self.mu * self.g
     return min(term1, term2, term3)
 
-#　減速理論値計算
+  #  減速理論値計算
   def calc_decel_limit(self):
     term1 = (self.mu * self.g * self.Lr) / (self.L - self.mu * self.h)
     term2 = self.g * (self.Lf / self.h)
     term3 = self.mu * self.g
-    return min(term1, term2, term3)  
-# --------------------------------------------------------------------
+    return min(term1, term2, term3)
 
-# オドメトリの読み込み作業
+  # --------------------------------------------------------------------
+
+  # オドメトリの読み込み作業
   def odom_callback(self, msg):
     vx = msg.twist.twist.linear.x
     vy = msg.twist.twist.linear.y
     self.current_v_odom = math.hypot(vx, vy)
 
-# 正確な経過時間を計測
+  # 正確な経過時間を計測
   def control_loop(self):
     now = self.get_clock().now()
     if self.start_time is None:
@@ -116,35 +115,41 @@ class KobukiAccelDecelTestNode(Node):
     elapsed_total = (now - self.start_time).nanoseconds / 1e9
 
     # --- 【状態 1: 加速フェーズ】 ---
-    if self.state == "ACCEL":
+    if self.state == 'ACCEL':
       self.target_v += self.a_acc * self.dt
       if self.target_v >= self.v_max:
         self.target_v = self.v_max
-        self.state = "CRUISE"
+        self.state = 'CRUISE'
         self.cruise_start_time = now
 
     # --- 【状態 2: 定速走行フェーズ（3秒間）】 ---
-    elif self.state == "CRUISE":
+    elif self.state == 'CRUISE':
       elapsed_cruise = (now - self.cruise_start_time).nanoseconds / 1e9
       if elapsed_cruise >= self.normal_vel_time:
-        self.state = "DECEL"
+        self.state = 'DECEL'
 
     # --- 【状態 3: 減速フェーズ】 ---
-    elif self.state == "DECEL":
+    elif self.state == 'DECEL':
       self.target_v -= self.a_dec * self.dt
       if self.target_v <= 0.0:
         self.target_v = 0.0
 
-      # 【変更】目標速度が0かつ、実測速度も十分に落ちる（停止）までDONEに移行しない
+      # 目標速度が0かつ、実測速度も十分に落ちる（停止）までDONEに移行しない
       if self.target_v == 0.0 and self.current_v_odom <= 0.05:
-        self.state = "DONE"
+        self.state = 'DONE'
 
     # --- 【状態 4: 終了（グラフ保存）】 ---
-    elif self.state == "DONE":
+    elif self.state == 'DONE':
       self.target_v = 0.0
+      # 速度0を送信
+      twist = Twist()
+      self.cmd_pub.publish(twist)
+
       if not self.graph_saved:
         self.save_and_plot_graph()
         self.graph_saved = True
+        self.timer.cancel()  # ループ完了後にタイマーを停止
+      return
 
     # データログの蓄積
     self.time_log.append(elapsed_total)
@@ -152,8 +157,8 @@ class KobukiAccelDecelTestNode(Node):
     self.measured_v_log.append(self.current_v_odom)
 
     self.get_logger().info(
-        f"[{self.state}] 時間: {elapsed_total:.1f}s | 目標:"
-        f" {self.target_v:.2f} m/s | 実測: {self.current_v_odom:.2f} m/s"
+        f'[{self.state}] 時間: {elapsed_total:.1f}s | 目標:'
+        f' {self.target_v:.2f} m/s | 実測: {self.current_v_odom:.2f} m/s'
     )
 
     # 送信
@@ -162,99 +167,105 @@ class KobukiAccelDecelTestNode(Node):
     twist.angular.z = 0.0
     self.cmd_pub.publish(twist)
 
-# -----------実験結果の保存------------
-def save_and_plot_graph(self):
-  # --- 1. CSVファイルの書き出し（ヘッダー前にパラメータ情報を挿入） ---
-  csv_filename = 'accel_deaccel_result.csv'
-  try:
-    with open(csv_filename, mode='w', newline='', encoding='utf-8') as f:
-      writer = csv.writer(f)
-      # メタデータとして実験条件を先頭に書き込む
-      writer.writerow(['# --- Experiment Parameters ---'])
-      writer.writerow(['# Friction coefficient (mu)', self.mu])
-      writer.writerow(['# Accel Safety Factor (alpha)', self.alpha])
-      writer.writerow(['# Decel Safety Factor (beta)', self.beta])
-      writer.writerow(['# Applied Accel Limit (a_acc [m/s^2])', f'{self.a_acc:.3f}'])
-      writer.writerow(['# Applied Decel Limit (a_dec [m/s^2])', f'{self.a_dec:.3f}'])
-      writer.writerow([])  # 区切り用の空行
+  # -----------実験結果の保存 (クラス内に格納)------------
+  def save_and_plot_graph(self):
+    # --- 1. CSVファイルの書き出し ---
+    csv_filename = 'accel_deaccel_result.csv'
+    try:
+      with open(csv_filename, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['# --- Experiment Parameters ---'])
+        writer.writerow(['# Friction coefficient (mu)', self.mu])
+        writer.writerow(['# Accel Safety Factor (alpha)', self.alpha])
+        writer.writerow(['# Decel Safety Factor (beta)', self.beta])
+        writer.writerow(
+            ['# Applied Accel Limit (a_acc [m/s^2])', f'{self.a_acc:.3f}']
+        )
+        writer.writerow(
+            ['# Applied Decel Limit (a_dec [m/s^2])', f'{self.a_dec:.3f}']
+        )
+        writer.writerow([])  # 空行
 
-      # データ列のヘッダーとログデータ
-      writer.writerow([
-          'Time[s]',
-          'Target_Velocity[m/s]',
-          'Measured_Velocity[m/s]',
-      ])
-      for t, v_target, v_meas in zip(
-          self.time_log, self.target_v_log, self.measured_v_log
-      ):
-        writer.writerow([f'{t:.3f}', f'{v_target:.3f}', f'{v_meas:.3f}'])
-    self.get_logger().info(
-        f'【CSV保存完了】{csv_filename} にデータを保存しました。'
-    )
-  except Exception as e:
-    self.get_logger().error(f'CSV保存失敗: {e}')
+        writer.writerow([
+            'Time[s]',
+            'Target_Velocity[m/s]',
+            'Measured_Velocity[m/s]',
+        ])
+        for t, v_target, v_meas in zip(
+            self.time_log, self.target_v_log, self.measured_v_log
+        ):
+          writer.writerow([f'{t:.3f}', f'{v_target:.3f}', f'{v_meas:.3f}'])
+      self.get_logger().info(
+          f'【CSV保存完了】{csv_filename} にデータを保存しました。'
+      )
+    except Exception as e:
+      self.get_logger().error(f'CSV保存失敗: {e}')
 
-  # --- 2. グラフ画像の描画・保存 ---
-  plt.figure(figsize=(9, 5))
-  plt.plot(
-      self.time_log,
-      self.target_v_log,
-      label='Target Velocity (m/s)',
-      linestyle='--',
-      color='blue',
-  )
-  plt.plot(
-      self.time_log,
-      self.measured_v_log,
-      label='Measured Velocity (Odom)',
-      color='red',
-  )
+    # --- 2. グラフ画像の描画・保存 ---
+    try:
+      plt.figure(figsize=(9, 5))
+      plt.plot(
+          self.time_log,
+          self.target_v_log,
+          label='Target Velocity (m/s)',
+          linestyle='--',
+          color='blue',
+      )
+      plt.plot(
+          self.time_log,
+          self.measured_v_log,
+          label='Measured Velocity (Odom)',
+          color='red',
+      )
 
-  # グラフ右下に表示する条件パラメータのテキスト作成
-  param_text = (
-      f'[ Parameters ]\n'
-      f'mu: {self.mu}\n'
-      f'alpha (Accel): {self.alpha}\n'
-      f'beta (Decel): {self.beta}\n'
-      f'a_acc: {self.a_acc:.2f} m/s²\n'
-      f'a_dec: {self.a_dec:.2f} m/s²'
-  )
+      param_text = (
+          f'[ Parameters ]\n'
+          f'mu: {self.mu}\n'
+          f'alpha (Accel): {self.alpha}\n'
+          f'beta (Decel): {self.beta}\n'
+          f'a_acc: {self.a_acc:.2f} m/s²\n'
+          f'a_dec: {self.a_dec:.2f} m/s²'
+      )
 
-  # グラフ内にテキストボックスを配置（右下端）
-  plt.gca().text(
-      0.97,
-      0.05,
-      param_text,
-      transform=plt.gca().transAxes,
-      fontsize=9,
-      verticalalignment='bottom',
-      horizontalalignment='right',
-      bbox=dict(
-          boxstyle='round,pad=0.5', facecolor='white', alpha=0.8, edgecolor='gray'
-      ),
-  )
+      plt.gca().text(
+          0.97,
+          0.05,
+          param_text,
+          transform=plt.gca().transAxes,
+          fontsize=9,
+          verticalalignment='bottom',
+          horizontalalignment='right',
+          bbox=dict(
+              boxstyle='round,pad=0.5',
+              facecolor='white',
+              alpha=0.8,
+              edgecolor='gray',
+          ),
+      )
 
-  plt.title('Kobuki Kinematic Accel/Decel Response')
-  plt.xlabel('Time [s]')
-  plt.ylabel('Velocity [m/s]')
-  plt.grid(True)
-  plt.legend(loc='upper left')  # パラメータ表示と重ならないよう凡例を左上に移動
+      plt.title('Kobuki Kinematic Accel/Decel Response')
+      plt.xlabel('Time [s]')
+      plt.ylabel('Velocity [m/s]')
+      plt.grid(True)
+      plt.legend(loc='upper left')
 
-  filename = 'accel_deaccel_result.png'
-  plt.savefig(filename)
-  self.get_logger().info(
-      f'【グラフ保存完了】{filename} に画像を保存しました。'
-  )
-  plt.show()
+      filename = 'accel_deaccel_result.png'
+      plt.savefig(filename)
+      self.get_logger().info(
+          f'【グラフ保存完了】{filename} に画像を保存しました。'
+      )
+      plt.show()
+    except Exception as e:
+      self.get_logger().error(f'グラフ描画・保存失敗: {e}')
 
-
+  # -----------緊急停止機能 (クラス内に格納)------------
   def emergency_stop(self):
     """Ctrl+C などの割り込み時にロボットへ即座に速度0を送る関数"""
     twist = Twist()
     twist.linear.x = 0.0
     twist.angular.z = 0.0
     self.cmd_pub.publish(twist)
-    self.get_logger().warn("【緊急停止】速度 0 を送信しました。")
+    self.get_logger().warn('【緊急停止】速度 0 を送信しました。')
 
 
 def main(args=None):
@@ -266,13 +277,17 @@ def main(args=None):
   except KeyboardInterrupt:
     pass
   finally:
+    # 割り込み終了時でも停止コマンドを発行
     node.emergency_stop()
+
+    # DONEに達する前にCtrl+C等で中断された場合もログがあればグラフとCSVを出力
     if not node.graph_saved and len(node.time_log) > 0:
       node.save_and_plot_graph()
+
     node.destroy_node()
     if rclpy.ok():
       rclpy.shutdown()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
   main()
