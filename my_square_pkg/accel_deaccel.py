@@ -8,7 +8,6 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
-
 class KobukiTwoStepAccelTestNode(Node):
 
   def __init__(self):
@@ -18,7 +17,19 @@ class KobukiTwoStepAccelTestNode(Node):
     self.cmd_pub = self.create_publisher(
         Twist, '/aiformula_control/twist_mux/cmd_vel', 10
     )
-
+# 2. Subscriber
+    qos_profile = QoSProfile(
+        reliability=ReliabilityPolicy.BEST_EFFORT,  # RELIABLE から変更
+        durability=DurabilityPolicy.VOLATILE,
+        depth=1,  # 10 から 1 に変更（最新フレームのみを取得）
+    )
+    self.odom_sub = self.create_subscription(
+        Odometry,
+        '/aiformula_sensing/gyro_odometry_publisher/odom',
+        self.odom_callback,
+        qos_profile,
+    )
+    """
     # 2. Subscriber
     qos_profile = QoSProfile(
         reliability=ReliabilityPolicy.RELIABLE,
@@ -31,7 +42,7 @@ class KobukiTwoStepAccelTestNode(Node):
         self.odom_callback,
         qos_profile,
     )
-
+    """
     # 3. 物理パラメータ
     self.g = 9.81  # 重力加速度 [m/s^2]
     self.mu = 0.49  # 路面の摩擦係数
@@ -66,7 +77,7 @@ class KobukiTwoStepAccelTestNode(Node):
         f"【安全適用】加速(α={self.alpha}): {self.a_acc:.2f} m/s^2 |"
         f" 減速(β={self.beta}): {self.a_dec:.2f} m/s^2"
     )
-
+    
     # 5. 制御ループ用の変数
     self.current_v_odom = 0.0
     self.target_v = 0.0

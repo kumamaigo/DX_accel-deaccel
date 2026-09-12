@@ -1,210 +1,316 @@
-import rclpy  # ROS 2の基本Pythonライブラリ
-from rclpy.node import Node  # ノード（処理の最小単位）を作成するためのクラス
-from geometry_msgs.msg import Twist  # ロボットへ送る速度命令（直進速度・回転速度）のデータ型
-from nav_msgs.msg import Odometry  # ロボットから届くオドメトリ（現在位置・現在速度）のデータ型
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy  # 通信品質（QoS）設定用のクラス
-import matplotlib.pyplot as plt  # グラフ描画用
+import csv
 import math
+import matplotlib.pyplot as plt
 
-class KobukiAccelDecelTestNode(Node):
-    def __init__(self):
-        # ノード名を 'kobuki_accel_decel_test_node' として初期化
-        super().__init__('kobuki_accel_decel_test_node')
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
-        # ----------------------------------------------------
-        # 1. ロボットへの命令出力（Publisher）の設定
-        # ----------------------------------------------------
-        self.cmd_pub = self.create_publisher(Twist, '/aiformula_control/twist_mux/cmd_vel', 10)
 
-        # ----------------------------------------------------
-        # 2. ロボットからの情報受信（Subscriber）の設定
-        # ----------------------------------------------------
-        qos_profile = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,  # データを確実に届ける設定
-            durability=DurabilityPolicy.VOLATILE,    # 過去のデータは保持しない設定
-            depth=10                                 # 保持するデータ数
+class KobukiThreeStepDecelTestNode(Node):
+
+  def __init__(self):
+    super().__init__('kobuki_three_step_decel_node')
+
+    # 1. Publisher
+    self.cmd_pub = self.create_publisher(
+        Twist, '/aiformula_control/twist_mux/cmd_vel', 10
+    )
+
+    # 2. Subscriber
+    qos_profile = QoSProfile(
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        durability=DurabilityPolicy.VOLATILE,
+        depth=1,  # 最新フレームのみを取得
+    )
+    self.odom_sub = self.create_subscription(
+        Odometry,
+        '/aiformula_sensing/gyro_odometry_publisher/odom',
+        self.odom_callback,
+        qos_profile,
+    )
+
+    # 3. 物理パラメータ
+    self.g = 9.81  # 重力加速度 [m/s^2]
+    self.mu = 0.35  # 路面の摩擦係数
+    self.h = 0.15  # 重心の高さ [m]
+    self.Lf = 0.15  # 前軸から重心までの距離 [m]
+    self.Lr = 0.7  # 後軸から重心までの距離 [m]
+    self.L = self.Lf + self.Lr  # ホイールベース [m]
+
+    # --- 追従性を高めるための安全係数設定 ---
+    self.alpha = 0.8  # 加速用の安全係数
+    self.beta = 0.5  # 減速用の安全係数
+
+    # 3段階速度設定 (7.2 km/h -> 3.6 km/h -> 1.8 km/h)
+    self.v_max1 = 7.2 / 3.6  # 第1目標: 7.2 km/h = 2.0 m/s
+    self.v_max2 = 3.6 / 3.6  # 第2目標: 3.6 km/h = 1.0 m/s
+    self.v_max3 = 1.8 / 3.6  # 第3目標: 1.8 km/h = 0.5 m/s
+
+    # 各定速フェーズの時間設定
+    self.cruise1_time = 2.0  # 7.2km/h での定速時間 [s]
+    self.cruise2_time = 2.5  # 3.6km/h での定速時間 [s]
+    self.cruise3_time = 2.0  # 1.8km/h での定速時間 [s]
+
+    # 4. 理論限界計算 ＋ 安全係数の適用
+    raw_a_acc = self.calc_accel_limit()
+    raw_a_dec = self.calc_decel_limit()
+
+    self.a_acc = raw_a_acc * self.alpha
+    self.a_dec = raw_a_dec * self.beta
+
+    self.get_logger().info(
+        f'【理論限界】加速: {raw_a_acc:.2f} m/s^2 | 減速: {raw_a_dec:.2f} m/s^2'
+    )
+    self.get_logger().info(
+        f'【安全適用】加速(α={self.alpha}): {self.a_acc:.2f} m/s^2 |'
+        f' 減速(β={self.beta}): {self.a_dec:.2f} m/s^2'
+    )
+
+    # 5. 制御ループ用の変数
+    self.current_v_odom = 0.0
+    self.target_v = 0.0
+    self.state = 'ACCEL'  # 初期状態は加速 (0 -> 7.2km/h)
+    self.phase_start_time = None
+
+    self.dt = 0.1
+    self.timer = self.create_timer(self.dt, self.control_loop)
+
+    # 6. データログ
+    self.start_time = None
+    self.time_log = []
+    self.target_v_log = []
+    self.measured_v_log = []
+    self.graph_saved = False
+
+  def calc_accel_limit(self):
+    term1 = (self.mu * self.g * self.Lr) / (self.L + self.mu * self.h)
+    term2 = self.g * (self.Lr / self.h)
+    term3 = self.mu * self.g
+    return min(term1, term2, term3)
+
+  def calc_decel_limit(self):
+    term1 = (self.mu * self.g * self.Lr) / (self.L - self.mu * self.h)
+    term2 = self.g * (self.Lf / self.h)
+    term3 = self.mu * self.g
+    return min(term1, term2, term3)
+
+  def odom_callback(self, msg):
+    vx = msg.twist.twist.linear.x
+    vy = msg.twist.twist.linear.y
+    self.current_v_odom = math.hypot(vx, vy)
+
+  def control_loop(self):
+    now = self.get_clock().now()
+    if self.start_time is None:
+      self.start_time = now
+
+    elapsed_total = (now - self.start_time).nanoseconds / 1e9
+
+    # --- 【状態 1: 加速フェーズ (0 -> 7.2km/h)】 ---
+    if self.state == 'ACCEL':
+      self.target_v += self.a_acc * self.dt
+      if self.target_v >= self.v_max1:
+        self.target_v = self.v_max1
+        self.state = 'CRUISE1'
+        self.phase_start_time = now
+
+    # --- 【状態 2: 第1定速フェーズ (7.2km/h で 2.0秒間)】 ---
+    elif self.state == 'CRUISE1':
+      elapsed_phase = (now - self.phase_start_time).nanoseconds / 1e9
+      if elapsed_phase >= self.cruise1_time:
+        self.state = 'DECEL1'
+
+    # --- 【状態 3: 第1減速フェーズ (7.2km/h -> 3.6km/h)】 ---
+    elif self.state == 'DECEL1':
+      self.target_v -= self.a_dec * self.dt
+      if self.target_v <= self.v_max2:
+        self.target_v = self.v_max2
+        self.state = 'CRUISE2'
+        self.phase_start_time = now
+
+    # --- 【状態 4: 第2定速フェーズ (3.6km/h で 2.5秒間)】 ---
+    elif self.state == 'CRUISE2':
+      elapsed_phase = (now - self.phase_start_time).nanoseconds / 1e9
+      if elapsed_phase >= self.cruise2_time:
+        self.state = 'DECEL2'
+
+    # --- 【状態 5: 第2減速フェーズ (3.6km/h -> 1.8km/h)】 ---
+    elif self.state == 'DECEL2':
+      self.target_v -= self.a_dec * self.dt
+      if self.target_v <= self.v_max3:
+        self.target_v = self.v_max3
+        self.state = 'CRUISE3'
+        self.phase_start_time = now
+
+    # --- 【状態 6: 第3定速フェーズ (1.8km/h で 2.0秒間)】 ---
+    elif self.state == 'CRUISE3':
+      elapsed_phase = (now - self.phase_start_time).nanoseconds / 1e9
+      if elapsed_phase >= self.cruise3_time:
+        self.state = 'DECEL3'
+
+    # --- 【状態 7: 第3減速フェーズ (1.8km/h -> 0km/h)】 ---
+    elif self.state == 'DECEL3':
+      self.target_v -= self.a_dec * self.dt
+      if self.target_v <= 0.0:
+        self.target_v = 0.0
+
+      # 目標速度が0かつ、実測速度も十分に停止するまで待機
+      if self.target_v == 0.0 and self.current_v_odom <= 0.05:
+        self.state = 'DONE'
+
+    # --- 【状態 8: 終了（保存処理）】 ---
+    elif self.state == 'DONE':
+      self.target_v = 0.0
+      # 停止コマンド送信
+      twist = Twist()
+      self.cmd_pub.publish(twist)
+
+      if not self.graph_saved:
+        self.save_and_plot_graph()
+        self.graph_saved = True
+        self.timer.cancel()
+      return
+
+    # データログの蓄積
+    self.time_log.append(elapsed_total)
+    self.target_v_log.append(self.target_v)
+    self.measured_v_log.append(self.current_v_odom)
+
+    self.get_logger().info(
+        f'[{self.state}] 時間: {elapsed_total:.1f}s | 目標:'
+        f' {self.target_v:.2f} m/s | 実測: {self.current_v_odom:.2f} m/s'
+    )
+
+    # 速度コマンド送信
+    twist = Twist()
+    twist.linear.x = float(self.target_v)
+    twist.angular.z = 0.0
+    self.cmd_pub.publish(twist)
+
+  def save_and_plot_graph(self):
+    # --- 1. CSV書き出し ---
+    csv_filename = 'three_step_decel_result.csv'
+    try:
+      with open(csv_filename, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['# --- Experiment Parameters ---'])
+        writer.writerow(['# Friction coefficient (mu)', self.mu])
+        writer.writerow(['# Speed 1 (km/h)', 7.2])
+        writer.writerow(['# Speed 2 (km/h)', 3.6])
+        writer.writerow(['# Speed 3 (km/h)', 1.8])
+        writer.writerow(['# Cruise 1 Duration (s)', self.cruise1_time])
+        writer.writerow(['# Cruise 2 Duration (s)', self.cruise2_time])
+        writer.writerow(['# Cruise 3 Duration (s)', self.cruise3_time])
+        writer.writerow(['# Accel Safety Factor (alpha)', self.alpha])
+        writer.writerow(['# Decel Safety Factor (beta)', self.beta])
+        writer.writerow(
+            ['# Applied Accel Limit (a_acc [m/s^2])', f'{self.a_acc:.3f}']
         )
-        self.odom_sub = self.create_subscription(
-            Odometry,
-            '/aiformula_sensing/gyro_odometry_publisher/odom',
-            self.odom_callback,
-            qos_profile
+        writer.writerow(
+            ['# Applied Decel Limit (a_dec [m/s^2])', f'{self.a_dec:.3f}']
         )
+        writer.writerow([])
 
-        # ----------------------------------------------------
-        # 3. 物理パラメータ＆安全パラメータの設定
-        # ----------------------------------------------------
-        self.g = 9.81         # 重力加速度 [m/s^2]
-        self.mu = 0.35       # 路面の摩擦係数
-        self.h = 0.15         # 重心の高さ [m]
-        self.Lf = 0.15        # 前軸から重心までの距離 [m]
-        self.Lr = 0.7         # 後軸から重心までの距離 [m]
-        self.L = self.Lf + self.Lr  # ホイールベース [m]
-        self.alpha = 1.0      # 減速時の補正係数
+        writer.writerow([
+            'Time[s]',
+            'Target_Velocity[m/s]',
+            'Measured_Velocity[m/s]',
+        ])
+        for t, v_target, v_meas in zip(
+            self.time_log, self.target_v_log, self.measured_v_log
+        ):
+          writer.writerow([f'{t:.3f}', f'{v_target:.3f}', f'{v_meas:.3f}'])
+      self.get_logger().info(
+          f'【CSV保存完了】{csv_filename} にデータを保存しました。'
+      )
+    except Exception as e:
+      self.get_logger().error(f'CSV保存失敗: {e}')
 
-        # --- 【追加】安全パラメータ ---
-        self.safety_factor = 1.0   # 安全係数 (1.0 = 理論限界の100%に抑える)
-        self.max_a_acc = 7.5       # ハードウェア上の最大加速度上限 [m/s^2]
-        self.max_a_dec = 7.5       # ハードウェア上の最大減速度上限 [m/s^2]
-        
-        # 最高速度の設定 (時速3.6km = 約1.0m/s)
-        self.max_v_kmh = 3.6
-        self.v_max = self.max_v_kmh / 3.6  # [m/s] 単位に換算
+    # --- 2. グラフ描画・保存 ---
+    try:
+      plt.figure(figsize=(9, 5))
+      plt.plot(
+          self.time_log,
+          self.target_v_log,
+          label='Target Velocity (m/s)',
+          linestyle='--',
+          color='blue',
+      )
+      plt.plot(
+          self.time_log,
+          self.measured_v_log,
+          label='Measured Velocity (Odom)',
+          color='red',
+      )
 
-        # ----------------------------------------------------
-        # 4. 運動学モデル計算 ＋ 安全ガードの適用
-        # ----------------------------------------------------
-        # 理論上の限界加減速度を計算
-        raw_a_acc = self.calc_accel_limit()
-        raw_a_dec = self.calc_decel_limit()
+      param_text = (
+          f'[ Parameters ]\n'
+          f'Speed 1: 7.2 km/h ({self.v_max1:.2f} m/s) [{self.cruise1_time}s]\n'
+          f'Speed 2: 3.6 km/h ({self.v_max2:.2f} m/s) [{self.cruise2_time}s]\n'
+          f'Speed 3: 1.8 km/h ({self.v_max3:.2f} m/s) [{self.cruise3_time}s]\n'
+          f'alpha: {self.alpha} | beta: {self.beta}\n'
+          f'a_acc: {self.a_acc:.2f} m/s²\n'
+          f'a_dec: {self.a_dec:.2f} m/s²'
+      )
 
-        # 安全係数(safety_factor)を掛け、上限値(max_a_*)を超えないようにガード
-        self.a_acc = min(raw_a_acc * self.safety_factor, self.max_a_acc)
-        self.a_dec = min(raw_a_dec * self.safety_factor, self.max_a_dec)
+      plt.gca().text(
+          0.97,
+          0.05,
+          param_text,
+          transform=plt.gca().transAxes,
+          fontsize=9,
+          verticalalignment='bottom',
+          horizontalalignment='right',
+          bbox=dict(
+              boxstyle='round,pad=0.5',
+              facecolor='white',
+              alpha=0.8,
+              edgecolor='gray',
+          ),
+      )
 
-        # ターミナルログに計算値と採用値を表示
-        self.get_logger().info(f"【理論限界】加速: {raw_a_acc:.2f} m/s^2 | 減速: {raw_a_dec:.2f} m/s^2")
-        self.get_logger().info(f"【安全適用】加速: {self.a_acc:.2f} m/s^2 | 減速: {self.a_dec:.2f} m/s^2")
+      plt.title('Kobuki Three-Step Deceleration Response')
+      plt.xlabel('Time [s]')
+      plt.ylabel('Velocity [m/s]')
+      plt.grid(True)
+      plt.legend(loc='upper left')
 
-        # ----------------------------------------------------
-        # 5. 制御ループ用の変数設定
-        # ----------------------------------------------------
-        self.current_v_odom = 0.0   # オドメトリから読み取った実測速度 [m/s]
-        self.target_v = 0.0         # ロボットに指示する目標速度 [m/s]
-        self.state = 'ACCEL'        # 状態管理（'ACCEL', 'CRUISE', 'DECEL', 'DONE'）
-        self.cruise_start_time = None
+      filename = 'three_step_decel_result.png'
+      plt.savefig(filename)
+      self.get_logger().info(
+          f'【グラフ保存完了】{filename} に画像を保存しました。'
+      )
+      plt.show()
+    except Exception as e:
+      self.get_logger().error(f'グラフ描画・保存失敗: {e}')
 
-        # 0.1秒ごと（10Hz）に control_loop 関数を繰り返し呼ぶタイマーを起動
-        self.dt = 0.1
-        self.timer = self.create_timer(self.dt, self.control_loop)
+  def emergency_stop(self):
+    twist = Twist()
+    twist.linear.x = 0.0
+    twist.angular.z = 0.0
+    self.cmd_pub.publish(twist)
+    self.get_logger().warn('【緊急停止】速度 0 を送信しました。')
 
-        # ----------------------------------------------------
-        # 6. グラフ保存用のデータリスト＆時間管理
-        # ----------------------------------------------------
-        self.start_time = None
-        self.time_log = []
-        self.target_v_log = []
-        self.measured_v_log = []
-        self.graph_saved = False
-
-    def calc_accel_limit(self):
-        """ 手書きノートの式に基づく「最大加速度」の計算 """
-        term1 = (self.mu * self.g * self.Lr) / (self.L + self.mu * self.h)  # 駆動輪のスリップ限界
-        term2 = self.g * (self.Lr / self.h)                                 # ウイリー限界
-        term3 = self.mu * self.g                                            # タイヤの摩擦限界
-        return min(term1, term2, term3)
-
-    def calc_decel_limit(self):
-        """ 手書きノートの式に基づく「最大減速度」の計算 """
-        term1 = (self.mu * self.g * self.Lr) / (self.L - self.mu * self.h)  # 駆動輪のスリップ限界
-        term2 = self.g * (self.Lf / self.h)                                 # 前転限界
-        term3 = self.mu * self.g                                            # タイヤの摩擦限界
-        return self.alpha * min(term1, term2, term3)
-
-    1#def odom_callback(self, msg):
-      #  """ オドメトリデータが届くたびに更新される関数 """
-       # self.current_v_odom = msg.twist.twist.linear.xlabel
-
-    def odom_callback(self, msg):
-        """ オドメトリデータが届くたびに更新される関数 """
-        vx = msg.twist.twist.linear.x
-        vy = msg.twist.twist.linear.y
-        
-        # X軸とY軸の速度から、現在の実際の進行速度（大きさ）を計算
-        self.current_v_odom = math.hypot(vx, vy)
-
-
-    def control_loop(self):
-        """ 0.1秒ごとに実行されるメインの制御関数 """
-        now = self.get_clock().now()
-        if self.start_time is None:
-            self.start_time = now
-        
-        elapsed_total = (now - self.start_time).nanoseconds / 1e9
-
-        # --- 【状態 1: 加速フェーズ】 ---
-        if self.state == 'ACCEL':
-            self.target_v += self.a_acc * self.dt
-            if self.target_v >= self.v_max:
-                self.target_v = self.v_max
-                self.state = 'CRUISE'
-                self.cruise_start_time = now
-
-        # --- 【状態 2: 定速走行フェーズ（3秒間）】 ---
-        elif self.state == 'CRUISE':
-            elapsed_cruise = (now - self.cruise_start_time).nanoseconds / 1e9
-            if elapsed_cruise >= 3.0:
-                self.state = 'DECEL'
-
-        # --- 【状態 3: 減速フェーズ】 ---
-        elif self.state == 'DECEL':
-            self.target_v -= self.a_dec * self.dt
-            if self.target_v <= 0.0:
-                self.target_v = 0.0
-                self.state = 'DONE'
-
-        # --- 【状態 4: 終了（グラフ保存）】 ---
-        elif self.state == 'DONE':
-            self.target_v = 0.0
-            if not self.graph_saved:
-                self.save_and_plot_graph()
-                self.graph_saved = True
-
-        # データログの蓄積
-        self.time_log.append(elapsed_total)
-        self.target_v_log.append(self.target_v)
-        self.measured_v_log.append(self.current_v_odom)
-
-        self.get_logger().info(
-            f"[{self.state}] 時間: {elapsed_total:.1f}s | 目標: {self.target_v:.2f} m/s | 実測: {self.current_v_odom:.2f} m/s"
-        )
-
-        # 送信
-        twist = Twist()
-        twist.linear.x = float(self.target_v)
-        twist.angular.z = 0.0
-        self.cmd_pub.publish(twist)
-
-    def save_and_plot_graph(self):
-        """ 実験データのプロットと保存 """
-        plt.figure(figsize=(9, 5))
-        plt.plot(self.time_log, self.target_v_log, label='Target Velocity (m/s)', linestyle='--', color='blue')
-        plt.plot(self.time_log, self.measured_v_log, label='Measured Velocity (Odom)', color='red')
-        
-        plt.title('Kobuki Kinematic Accel/Decel Response (With Safety Factors)')
-        plt.xlabel('Time [s]')
-        plt.ylabel('Velocity [m/s]')
-        plt.grid(True)
-        plt.legend()
-        
-        filename = 'kinematic_accel_deaccel_result.png'
-        plt.savefig(filename)
-        self.get_logger().info(f"【グラフ保存完了】{filename} に画像を保存しました。")
-        plt.show()
-
-    def emergency_stop(self):
-        """ Ctrl+C などの割り込み時にロボットへ即座に速度0を送る関数 """
-        twist = Twist()
-        twist.linear.x = 0.0
-        twist.angular.z = 0.0
-        self.cmd_pub.publish(twist)
-        self.get_logger().warn("【緊急停止】速度 0 を送信しました。")
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = KobukiAccelDecelTestNode()
-    
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.emergency_stop()
-        if not node.graph_saved and len(node.time_log) > 0:
-            node.save_and_plot_graph()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+  rclpy.init(args=args)
+  node = KobukiThreeStepDecelTestNode()
+
+  try:
+    rclpy.spin(node)
+  except KeyboardInterrupt:
+    pass
+  finally:
+    node.emergency_stop()
+    if not node.graph_saved and len(node.time_log) > 0:
+      node.save_and_plot_graph()
+    node.destroy_node()
+    if rclpy.ok():
+      rclpy.shutdown()
+
 
 if __name__ == '__main__':
-    main()
+  main()
