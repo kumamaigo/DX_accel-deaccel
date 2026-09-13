@@ -45,23 +45,23 @@ class KobukiTwoStepAccelTestNode(Node):
     """
     # 3. 物理パラメータ
     self.g = 9.81  # 重力加速度 [m/s^2]
-    self.mu = 0.35  # 路面の摩擦係数
+    self.mu = 0.49  # 路面の摩擦係数
     self.h = 0.15  # 重心の高さ [m]
-    self.Lf = 0.15  # 前軸から重心までの距離 [m]
-    self.Lr = 0.7  # 後軸から重心までの距離 [m]
+    self.Lf = 0.173  # 前軸から重心までの距離 [m]
+    self.Lr = 0.542  # 後軸から重心までの距離 [m]
     self.L = self.Lf + self.Lr  # ホイールベース [m]
 
     # --- 追従性を高めるための安全係数設定 ---
-    self.alpha = 0.8  # 加速用の安全係数 (青破線の傾きを緩やかにして追従させる)
+    self.alpha = 3  # 加速用の安全係数 (青破線の傾きを緩やかにして追従させる)
     self.beta = 0.5  # 減速用の安全係数 (急ブレーキによる遅れを防ぐ)
 
     # 2段階の目標速度設定
-    self.v_max1 = 3.6 / 3.6  # 第1目標: 3.6 km/h = 1.0 m/s
-    self.v_max2 = 7.2 / 3.6  # 第2目標: 7.2 km/h ≒ 2m/s
+    self.v_max1 = 3 / 3.6  # 第1目標: 3 km/h ≒ 0.83 m/s
+    self.v_max2 = 10 / 3.6  # 第2目標: 15 km/h ≒ 4.17 m/s
 
     # 各定速フェーズの時間設定
-    self.cruise1_time = 0.8  # 第1定速時間 [s]
-    self.cruise2_time = 0.8  # 第2定速時間 [s]
+    self.cruise1_time = 0.3  # 第1定速時間 [s]
+    self.cruise2_time = 0.6  # 第2定速時間 [s]
 
     # 4. 理論限界計算 ＋ 安全係数の適用
     raw_a_acc = self.calc_accel_limit()

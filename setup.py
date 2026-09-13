@@ -28,6 +28,10 @@ setup(
         'accel_deaccel = my_square_pkg.accel_deaccel:main',
         'accel_deaccel_2 = my_square_pkg.accel_deaccel_2:main',
         'accel_deaccel_3 = my_square_pkg.accel_deaccel_3:main',
+        'confirm_2 = my_square_pkg.confirm_2:main',
+        'confirm_1 = my_square_pkg.confirm_1:main',
+        'detection = my_square_pkg.detection:main',
+        
         ],
     },
 )
