@@ -31,7 +31,7 @@ setup(
         'confirm_2 = my_square_pkg.confirm_2:main',
         'confirm_1 = my_square_pkg.confirm_1:main',
         'detection = my_square_pkg.detection:main',
-        
+	'checkcheck_microcontroller = my_square_pkg.checkcheck_microcontroller:main',
         ],
     },
 )
